@@ -1,0 +1,6 @@
+{
+  "name": "NovaLex Contratos MVP",
+  "description": "Motor de Generación Automática de Contratos de Prestación de Servicios para NovaLex Tecnología Contractual S.A. de C.V.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

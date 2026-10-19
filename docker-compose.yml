@@ -1,0 +1,120 @@
+﻿# ==============================================================================
+# MOTOR INTELIGENTE DE GENERACIÃ“N AUTOMÃTICA DE CONTRATOS - NOVALEX TECNOLOGÃA CONTRACTUAL S.A. DE C.V.
+# OrquestaciÃ³n de Microservicios Locales con Docker Compose (PRD SecciÃ³n 6 y 9)
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Frontend: Interfaz Web React + Vite (Roles: Generador, Editor, Aprobador)
+  # ----------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: plurione-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - ./src:/app/src
+      - ./index.html:/app/index.html
+      - /app/node_modules
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - contratos-net
+    restart: unless-stopped
+
+  # ----------------------------------------------------------------------------
+  # 2. Backend: API REST FastAPI (Python 3.11) + WeasyPrint + LangChain
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: plurione-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://plurione@postgres:5432/contratos_db
+      - OLLAMA_HOST=http://ollama:11434
+      - MODEL_NAME=llama3.1:8b
+      - CORS_ORIGINS=http://localhost:3000
+      - JWT_SECRET=${JWT_SECRET:?Debes configurar JWT_SECRET en tu entorno local}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - contratos-net
+    restart: unless-stopped
+
+  # ----------------------------------------------------------------------------
+  # 3. Inteligencia Artificial Local: Ollama con Llama 3.1 8B (Costo $0, datos locales)
+  # ----------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: plurione-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - contratos-net
+    restart: unless-stopped
+    # Descomenta este bloque si cuentas con tarjeta grÃ¡fica NVIDIA compatible con CUDA:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ----------------------------------------------------------------------------
+  # 4. Base de Datos Relacional: PostgreSQL 15
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: plurione-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=plurione
+      - POSTGRES_DB=contratos_db
+      - POSTGRES_HOST_AUTH_METHOD=scram-sha-256
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/init_db.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./backend/pg_hba.conf:/var/lib/postgresql/data/pg_hba.conf:rw
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U plurione -d contratos_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - contratos-net
+    restart: unless-stopped
+
+# ------------------------------------------------------------------------------
+# VolÃºmenes Persistentes
+# ------------------------------------------------------------------------------
+volumes:
+  pgdata:
+    driver: local
+  ollama_data:
+    driver: local
+
+# ------------------------------------------------------------------------------
+# Red Interna Bridge
+# ------------------------------------------------------------------------------
+networks:
+  contratos-net:
+    driver: bridge
+
