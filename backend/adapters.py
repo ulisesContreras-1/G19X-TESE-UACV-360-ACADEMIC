@@ -22,7 +22,7 @@ def db_to_cliente_fiscal(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": str(row["id"]),
         "razonSocial": str(row["razon_social"]),
-        "rfc": str(row["rfc"]).strip().toUpperCase() if hasattr(str(row["rfc"]), "toUpperCase") else str(row["rfc"]).strip().upper(),
+        "rfc": str(row["rfc"]).strip().upper(),
         "domicilioFiscal": str(row["domicilio_fiscal"]),
         "representanteLegal": str(row["representante_legal"]),
         "cargo": str(row["cargo"]),

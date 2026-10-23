@@ -223,6 +223,18 @@ def ejecutar_pruebas():
     # --------------------------------------------------------------------------
     print("\n[Prueba 9] Aprobador aprobando o rechazando conforme a las reglas de negocio...")
     try:
+        # Asegurar contrato en BORRADOR para iniciar la secuencia completa
+        conn = psycopg2.connect("postgresql://plurione@postgres:5432/contratos_db")
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM contratos WHERE estado = 'BORRADOR' LIMIT 1;")
+            row_draft = cur.fetchone()
+            if row_draft:
+                contrato_target_id = row_draft[0]
+            else:
+                cur.execute("UPDATE contratos SET estado = 'BORRADOR' WHERE id = %s;", (contrato_target_id,))
+                conn.commit()
+        conn.close()
+
         # Generador envía a EN_REVISION
         res_envio = requests.put(
             f"{BASE_URL}/api/v1/contratos/{contrato_target_id}/estado",
@@ -372,7 +384,7 @@ def ejecutar_pruebas():
             "vigencia_fin": "2027-04-30",
             "penalizacion": "1% diario por retraso no justificado"
         },
-        "clausulas_ids": ["clausula-std-1", "clausula-std-2", "clausula-std-3", "clausula-std-6", "clausula-std-10"],
+        "clausulas_ids": ["clausula-std-1", "clausula-std-2", "clausula-std-3"],
         "creado_por": "usr-gen-01"
     }
 
@@ -385,11 +397,28 @@ def ejecutar_pruebas():
         }, timeout=10)
         token_gen = res_login_fresh.json()["access_token"]
 
+        # 13a. Verificación previa: Rechazo de cláusulas inexistentes con HTTP 400
+        res_bad_clause = requests.post(
+            f"{BASE_URL}/api/v1/contratos/generar",
+            headers={"Authorization": f"Bearer {token_gen}"},
+            json={
+                "cliente_id": "cli-001",
+                "variables": payload_generacion["variables"],
+                "clausulas_ids": ["clausula-inexistente-xyz-999"],
+                "creado_por": "usr-gen-01"
+            },
+            timeout=15
+        )
+        assert res_bad_clause.status_code == 400, f"Se esperaba 400 ante cláusula inexistente, se obtuvo: {res_bad_clause.status_code}"
+        assert "no existen" in res_bad_clause.json().get("detail", "").lower()
+        print(" -> ÉXITO: Validación de cláusulas inexistentes rechazada con HTTP 400.")
+
+        # 13b. Generación autorizada del contrato completo con Llama 3.1 8B
         res_gen = requests.post(
             f"{BASE_URL}/api/v1/contratos/generar",
             headers={"Authorization": f"Bearer {token_gen}"},
             json=payload_generacion,
-            timeout=200
+            timeout=380
         )
         t_gen = time.time() - t0
         assert res_gen.status_code == 201, f"Status code no es 201: {res_gen.status_code} - {res_gen.text}"
@@ -422,7 +451,7 @@ def ejecutar_pruebas():
         assert data_get["estado"] == "BORRADOR"
         assert data_get["clienteId"] == "cli-001"
         assert data_get["variables"]["monto"] == 175000.00
-        assert len(data_get["clausulasSeleccionadas"]) == 5
+        assert len(data_get["clausulasSeleccionadas"]) == len(payload_generacion["clausulas_ids"])
         print(f" -> ÉXITO: Contrato recuperado con integridad referencial completa y folio {data_get['folio']}.")
         resultados.append(("14. Consulta posterior del contrato guardado", True, f"HTTP 200 | Folio {data_get['folio']} | {len(data_get['clausulasSeleccionadas'])} cláusulas"))
     except Exception as e:

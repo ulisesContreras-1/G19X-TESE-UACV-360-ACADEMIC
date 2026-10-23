@@ -1,11 +1,12 @@
-﻿"""
-MÃ³dulo de AutenticaciÃ³n y AutorizaciÃ³n NovaLex
-- Hashing y verificaciÃ³n de contraseÃ±as con bcrypt (rounds=12)
-- EmisiÃ³n y validaciÃ³n de tokens JWT (HS256) con expiraciÃ³n
-- Dependencias de FastAPI para protecciÃ³n de rutas y control estricto de roles
+"""
+Módulo de Autenticación y Autorización NovaLex
+- Hashing y verificación de contraseñas con bcrypt (rounds=12)
+- Emisión y validación de tokens JWT (HS256) con expiración
+- Dependencias de FastAPI para protección de rutas y control estricto de roles
 """
 
 import os
+from pathlib import Path
 import bcrypt
 import jwt
 from datetime import datetime, timezone, timedelta
@@ -13,10 +14,27 @@ from typing import Optional, Dict, Any, List
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
+try:
+    from dotenv import load_dotenv
+    # Cargar variables desde .env en /app o directorio actual si existe
+    env_path = Path(__file__).resolve().parent / ".env"
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+except ImportError:
+    pass
+
 from db import query_one
 
-# ConfiguraciÃ³n de variables de entorno para JWT
+# Configuración de variables de entorno para JWT
 JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET or len(JWT_SECRET.strip()) < 16:
+    raise RuntimeError(
+        "ERROR CRÍTICO DE SEGURIDAD: La variable de entorno 'JWT_SECRET' no está configurada, "
+        "está vacía o tiene menos de 16 caracteres. Debe definirse una clave criptográfica segura en .env o entorno."
+    )
+
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRATION_HOURS = int(os.getenv("JWT_EXPIRATION_HOURS", "8"))
 
@@ -31,7 +49,7 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifica una contraseÃ±a en texto plano contra su hash bcrypt."""
+    """Verifica una contraseña en texto plano contra su hash bcrypt."""
     try:
         return bcrypt.checkpw(
             plain_password.encode("utf-8"),
@@ -42,7 +60,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Crea un token JWT firmado criptogrÃ¡ficamente con tiempo de expiraciÃ³n."""
+    """Crea un token JWT firmado criptográficamente con tiempo de expiración."""
     to_encode = data.copy()
     now = datetime.now(timezone.utc)
     expire = now + (expires_delta or timedelta(hours=JWT_EXPIRATION_HOURS))
@@ -55,7 +73,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 
 def decode_access_token(token: str) -> Optional[dict]:
-    """Decodifica y valida la firma y expiraciÃ³n de un token JWT."""
+    """Decodifica y valida la firma y expiración de un token JWT."""
     try:
         payload = jwt.decode(
             token,
@@ -71,7 +89,7 @@ def decode_access_token(token: str) -> Optional[dict]:
 def authenticate_user(username_or_email: str, password: str) -> Optional[Dict[str, Any]]:
     """
     Busca al usuario en PostgreSQL por username o email, verifica el hash bcrypt
-    y comprueba que la cuenta estÃ© activa.
+    y comprueba que la cuenta esté activa.
     """
     cleaned_identifier = username_or_email.strip().lower()
     user = query_one(
@@ -100,13 +118,13 @@ async def get_current_user(
 ) -> Dict[str, Any]:
     """
     Dependencia de FastAPI: extrae y valida el token Bearer JWT.
-    Retorna los datos del usuario autenticado si es vÃ¡lido.
-    Lanza HTTP 401 si no hay token, si estÃ¡ expirado o si el usuario no existe.
+    Retorna los datos del usuario autenticado si es válido.
+    Lanza HTTP 401 si no hay token, si está expirado o si el usuario no existe.
     """
     if not credentials or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No autenticado. Se requiere un token de sesiÃ³n vÃ¡lido.",
+            detail="No autenticado. Se requiere un token de sesión válido.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -114,7 +132,7 @@ async def get_current_user(
     if not payload or "sub" not in payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token invÃ¡lido o expirado. Por favor inicia sesiÃ³n nuevamente.",
+            detail="Token inválido o expirado. Por favor inicia sesión nuevamente.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -147,7 +165,7 @@ async def get_current_user(
 def require_roles(allowed_roles: List[str]):
     """
     Decorador / Dependencia de FastAPI: valida que el rol del usuario autenticado
-    estÃ© dentro de la lista de roles permitidos.
+    esté dentro de la lista de roles permitidos.
     Lanza HTTP 403 Forbidden si el rol no tiene permisos.
     """
     async def role_checker(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
@@ -155,8 +173,7 @@ def require_roles(allowed_roles: List[str]):
         if user_role not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Acceso denegado: el rol '{user_role}' no tiene permisos para realizar esta operaciÃ³n."
+                detail=f"Acceso denegado: el rol '{user_role}' no tiene permisos para realizar esta operación."
             )
         return current_user
     return role_checker
-

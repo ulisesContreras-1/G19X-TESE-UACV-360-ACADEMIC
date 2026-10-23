@@ -1,7 +1,7 @@
-﻿"""
-MigraciÃ³n controlada de Identidad y Datos Demo en PostgreSQL
-Actualiza registros existentes a la nueva identidad ficticia 'NovaLex TecnologÃ­a Contractual S.A. de C.V.'
-sin destruir tablas, volÃºmenes ni romper claves forÃ¡neas de contratos existentes.
+"""
+Migración controlada de Identidad y Datos Demo en PostgreSQL
+Actualiza registros existentes a la nueva identidad ficticia 'NovaLex Tecnología Contractual S.A. de C.V.'
+sin destruir tablas, volúmenes ni romper claves foráneas de contratos existentes.
 """
 
 import json
@@ -12,7 +12,7 @@ from psycopg2.extras import RealDictCursor
 DB_URL = os.getenv("DATABASE_URL", "postgresql://plurione@postgres:5432/contratos_db")
 
 def ejecutar_migracion():
-    print("Iniciando migraciÃ³n controlada de datos en PostgreSQL...")
+    print("Iniciando migración controlada de datos en PostgreSQL...")
     conn = psycopg2.connect(DB_URL)
     conn.autocommit = False
 
@@ -22,7 +22,7 @@ def ejecutar_migracion():
             print("1. Actualizando usuarios en tabla 'usuarios'...")
             cur.execute("""
                 UPDATE usuarios SET
-                    nombre = 'Valeria Ramos PeÃ±a',
+                    nombre = 'Valeria Ramos Peña',
                     email = 'valeria.ramos@example.com',
                     cargo = 'Ingeniera de Soluciones Contractuales'
                 WHERE id = 'usr-gen-01';
@@ -31,7 +31,7 @@ def ejecutar_migracion():
                 UPDATE usuarios SET
                     nombre = 'Eduardo Lozano Mora',
                     email = 'eduardo.lozano@example.com',
-                    cargo = 'Revisor JurÃ­dico de Contratos'
+                    cargo = 'Revisor Jurídico de Contratos'
                 WHERE id = 'usr-edit-02';
             """)
             cur.execute("""
@@ -46,12 +46,12 @@ def ejecutar_migracion():
             print("2. Actualizando clientes en tabla 'clientes'...")
             cur.execute("""
                 UPDATE clientes SET
-                    razon_social = 'LogÃ­stica Integral Quantum S.A. de C.V.',
+                    razon_social = 'Logística Integral Quantum S.A. de C.V.',
                     rfc = 'LIQ180425AB1',
-                    domicilio_fiscal = 'Av. Insurgentes Sur 1200 Piso 5, Col. Del Valle, Benito JuÃ¡rez, Ciudad de MÃ©xico, C.P. 03100 (DemostraciÃ³n)',
+                    domicilio_fiscal = 'Av. Insurgentes Sur 1200 Piso 5, Col. Del Valle, Benito Juárez, Ciudad de México, C.P. 03100 (Demostración)',
                     representante_legal = 'Ing. Fernando Barrientos Ochoa',
                     cargo = 'Director General y Apoderado Legal',
-                    escritura = 'Escritura PÃºblica No. 24,190, NotarÃ­a PÃºblica No. 34 de la Ciudad de MÃ©xico (Ficticia)',
+                    escritura = 'Escritura Pública No. 24,190, Notaría Pública No. 34 de la Ciudad de México (Ficticia)',
                     email = 'contacto@logistica-quantum.example.com',
                     telefono = '55 5555 0120',
                     es_demo = TRUE
@@ -62,10 +62,10 @@ def ejecutar_migracion():
                 UPDATE clientes SET
                     razon_social = 'Distribuidora Nexus Farma S.A.P.I. de C.V.',
                     rfc = 'DNF140912CD2',
-                    domicilio_fiscal = 'Calzada de Tlalpan 2148, Col. Campestre Churubusco, CoyoacÃ¡n, Ciudad de MÃ©xico, C.P. 04200 (DemostraciÃ³n)',
+                    domicilio_fiscal = 'Calzada de Tlalpan 2148, Col. Campestre Churubusco, Coyoacán, Ciudad de México, C.P. 04200 (Demostración)',
                     representante_legal = 'Lic. Mariana Soto Castro',
                     cargo = 'Representante Legal y Directora de Operaciones',
-                    escritura = 'PÃ³liza Mercantil No. 8,921 ante CorredurÃ­a PÃºblica No. 51 de la Ciudad de MÃ©xico (Ficticia)',
+                    escritura = 'Póliza Mercantil No. 8,921 ante Correduría Pública No. 51 de la Ciudad de México (Ficticia)',
                     email = 'contacto@nexusfarma.example.com',
                     telefono = '55 5555 0140',
                     es_demo = TRUE
@@ -80,10 +80,10 @@ def ejecutar_migracion():
                     'cli-003',
                     'Roberto Garza Salinas',
                     'GASR820514U82',
-                    'Av. Paseo de la Reforma 450 Piso 8, CuauhtÃ©moc, Ciudad de MÃ©xico, C.P. 06600 (DemostraciÃ³n)',
+                    'Av. Paseo de la Reforma 450 Piso 8, Cuauhtémoc, Ciudad de México, C.P. 06600 (Demostración)',
                     'Roberto Garza Salinas',
-                    'Persona FÃ­sica con Actividad Empresarial (DemostraciÃ³n)',
-                    'Constancia de SituaciÃ³n Fiscal y Poder Notarial No. 12,300 de la CDMX (Ficticia)',
+                    'Persona Física con Actividad Empresarial (Demostración)',
+                    'Constancia de Situación Fiscal y Poder Notarial No. 12,300 de la CDMX (Ficticia)',
                     'roberto.garza@rgs-tech.example.com',
                     '55 5555 0180',
                     TRUE
@@ -98,11 +98,11 @@ def ejecutar_migracion():
                     telefono = EXCLUDED.telefono;
             """)
 
-            # 3. Actualizar ClÃ¡usulas EstÃ¡ndar (reemplazar PluriOne por NovaLex en texto_base)
-            print("3. Actualizando clÃ¡usula 1 en tabla 'clausulas'...")
+            # 3. Actualizar Cláusulas Estándar (reemplazar PluriOne por NovaLex en texto_base)
+            print("3. Actualizando cláusula 1 en tabla 'clausulas'...")
             cur.execute("""
                 UPDATE clausulas
-                SET texto_base = REPLACE(texto_base, 'PluriOne S.A. de C.V.', 'NovaLex TecnologÃ­a Contractual S.A. de C.V.')
+                SET texto_base = REPLACE(texto_base, 'PluriOne S.A. de C.V.', 'NovaLex Tecnología Contractual S.A. de C.V.')
                 WHERE texto_base LIKE '%PluriOne%';
             """)
 
@@ -124,30 +124,30 @@ def ejecutar_migracion():
                 historial = vars_dict.get("historial") or []
                 for h in historial:
                     if h.get("usuario") == "Ulises Contreras Valdez":
-                        h["usuario"] = "Valeria Ramos PeÃ±a"
+                        h["usuario"] = "Valeria Ramos Peña"
                     if h.get("usuario") == "Edgar Loheffelmman":
                         h["usuario"] = "Eduardo Lozano Mora"
-                    if h.get("usuario") == "Juan MÃ©ndez Herrera":
+                    if h.get("usuario") == "Juan Méndez Herrera":
                         h["usuario"] = "Javier Morales Hinojosa"
                     if "PluriOne" in h.get("detalles", ""):
-                        h["detalles"] = h["detalles"].replace("PluriOne S.A. de C.V.", "NovaLex TecnologÃ­a Contractual S.A. de C.V.")
+                        h["detalles"] = h["detalles"].replace("PluriOne S.A. de C.V.", "NovaLex Tecnología Contractual S.A. de C.V.")
 
                 vars_dict["historial"] = historial
                 vars_dict["esDemo"] = True
 
                 # Actualizar texto generado
                 txt = cnt["texto_generado"] or ""
-                txt = txt.replace("PluriOne S.A. de C.V.", "NovaLex TecnologÃ­a Contractual S.A. de C.V.")
-                txt = txt.replace("PLURIONE S.A. DE C.V.", "NOVALEX TECNOLOGÃA CONTRACTUAL S.A. DE C.V.")
+                txt = txt.replace("PluriOne S.A. de C.V.", "NovaLex Tecnología Contractual S.A. de C.V.")
+                txt = txt.replace("PLURIONE S.A. DE C.V.", "NOVALEX TECNOLOGÍA CONTRACTUAL S.A. DE C.V.")
                 txt = txt.replace("PLU060407HC9", "NTC260101AB1")
-                txt = txt.replace("Puebla 46, Colonia Roma Norte, AlcaldÃ­a CuauhtÃ©moc, C.P. 06700, Ciudad de MÃ©xico", "Av. Insurgentes Sur 1602 Piso 4, Col. CrÃ©dito Constructor, Benito JuÃ¡rez, C.P. 03940, Ciudad de MÃ©xico")
-                txt = txt.replace("Xochicuahuitl Gleason JuÃ¡rez", "Lic. Claudia Sandoval Ortega")
-                txt = txt.replace("XOCHICUAHUITL GLEASON JUÃREZ", "LIC. CLAUDIA SANDOVAL ORTEGA")
-                txt = txt.replace("Soluciones LogÃ­sticas BajÃ­o S.A. de C.V.", "LogÃ­stica Integral Quantum S.A. de C.V.")
-                txt = txt.replace("SOLUCIONES LOGÃSTICAS BAJÃO S.A. DE C.V.", "LOGÃSTICA INTEGRAL QUANTUM S.A. DE C.V.")
+                txt = txt.replace("Puebla 46, Colonia Roma Norte, Alcaldía Cuauhtémoc, C.P. 06700, Ciudad de México", "Av. Insurgentes Sur 1602 Piso 4, Col. Crédito Constructor, Benito Juárez, C.P. 03940, Ciudad de México")
+                txt = txt.replace("Xochicuahuitl Gleason Juárez", "Lic. Claudia Sandoval Ortega")
+                txt = txt.replace("XOCHICUAHUITL GLEASON JUÁREZ", "LIC. CLAUDIA SANDOVAL ORTEGA")
+                txt = txt.replace("Soluciones Logísticas Bajío S.A. de C.V.", "Logística Integral Quantum S.A. de C.V.")
+                txt = txt.replace("SOLUCIONES LOGÍSTICAS BAJÍO S.A. DE C.V.", "LOGÍSTICA INTEGRAL QUANTUM S.A. DE C.V.")
                 txt = txt.replace("SLB180425KP7", "LIQ180425AB1")
-                txt = txt.replace("Ulises Contreras Valdez", "Valeria Ramos PeÃ±a")
-                txt = txt.replace("ULISES CONTRERAS VALDEZ", "VALERIA RAMOS PEÃ‘A")
+                txt = txt.replace("Ulises Contreras Valdez", "Valeria Ramos Peña")
+                txt = txt.replace("ULISES CONTRERAS VALDEZ", "VALERIA RAMOS PEÑA")
 
                 cur.execute("""
                     UPDATE contratos
@@ -157,14 +157,13 @@ def ejecutar_migracion():
                 """, (json.dumps(vars_dict), txt, cid))
 
         conn.commit()
-        print("MigraciÃ³n completada con Ã©xito.")
+        print("Migración completada con éxito.")
     except Exception as e:
         conn.rollback()
-        print(f"Error en migraciÃ³n: {e}")
+        print(f"Error en migración: {e}")
         raise
     finally:
         conn.close()
 
 if __name__ == "__main__":
     ejecutar_migracion()
-
