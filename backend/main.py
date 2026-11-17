@@ -2,6 +2,7 @@ import os
 import re
 import json
 import time
+import html
 import logging
 import requests
 from contextlib import asynccontextmanager
@@ -12,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from weasyprint import HTML
 
-from db import get_db_connection, query_all, query_one, execute_command
+from db import DATABASE_URL, get_db_connection, query_all, query_one, execute_command
 from adapters import db_to_cliente_fiscal, db_to_clausula, db_to_contrato
 from initial_clauses import inicializar_clausulas_estandar
 from auth import (
@@ -33,7 +34,7 @@ logger = logging.getLogger("novalex.backend")
 # Variables de entorno
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "llama3.1:8b")
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://plurione@postgres:5432/contratos_db")
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "480"))
 
 # Datos ficticios de demostración de NovaLex Tecnología Contractual S.A. de C.V.
 # NOTA: Identidad corporativa ficticia con fines ilustrativos y de demostración de software.
@@ -182,15 +183,36 @@ def datetime_iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def sincronizar_secuencia_folios(conn):
+    """
+    Crea y sincroniza de forma atómica la secuencia PostgreSQL contratos_folio_seq.
+    Elimina condiciones de carrera en la asignación concurrente de folios.
+    """
+    with conn.cursor() as cur:
+        cur.execute("CREATE SEQUENCE IF NOT EXISTS contratos_folio_seq START WITH 1;")
+        cur.execute("""
+            SELECT COALESCE(MAX(
+                CAST(SUBSTRING(variables->>'folio' FROM 'NOVA-PSP-2026-([0-9]+)') AS INTEGER)
+            ), 0) FROM contratos WHERE variables->>'folio' IS NOT NULL;
+        """)
+        max_folio = cur.fetchone()[0] or 0
+        if max_folio > 0:
+            cur.execute("SELECT setval('contratos_folio_seq', %s, true);", (max_folio,))
+        else:
+            cur.execute("SELECT setval('contratos_folio_seq', 1, false);")
+        logger.info("Secuencia contratos_folio_seq sincronizada exitosamente (último folio: %d).", max_folio)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Inicialización de la aplicación: asegura cláusulas estándar y datos de demostración."""
+    """Inicialización de la aplicación: asegura cláusulas estándar y sincroniza secuencia de folios."""
     try:
         with get_db_connection() as conn:
             insertadas = inicializar_clausulas_estandar(conn)
             logger.info("Inicialización de cláusulas completada. Nuevas insertadas: %d", insertadas)
+            sincronizar_secuencia_folios(conn)
     except Exception as e:
-        logger.error("Error al inicializar cláusulas en DB: %s", e, exc_info=True)
+        logger.error("Error al inicializar base de datos en arranque: %s", e, exc_info=True)
     yield
 
 
@@ -280,11 +302,6 @@ class ActualizarEstadoContrato(BaseModel):
     rol: str = Field(..., pattern="^(GENERADOR|EDITOR|APROBADOR)$")
     detalles: Optional[str] = None
     motivoRechazo: Optional[str] = None
-
-
-class SolicitudPDF(BaseModel):
-    titulo: str
-    contenido_html: str
 
 
 # ==============================================================================
@@ -815,11 +832,11 @@ Redacta de manera formal, precisa y sintética cada sección, concluyendo debida
                 "options": {
                     "temperature": 0.1,
                     "top_p": 0.9,
-                    "num_ctx": 4096,
+                    "num_ctx": 8192,
                     "num_predict": 2048
                 }
             },
-            timeout=360
+            timeout=OLLAMA_TIMEOUT
         )
 
         if res.status_code != 200:
@@ -882,7 +899,7 @@ Redacta de manera formal, precisa y sintética cada sección, concluyendo debida
     except requests.exceptions.Timeout:
         raise HTTPException(
             status_code=504,
-            detail=f"Tiempo de espera agotado al comunicar con Ollama ({OLLAMA_HOST}). El modelo {MODEL_NAME} no respondió en 360 segundos."
+            detail=f"Tiempo de espera agotado al comunicar con Ollama ({OLLAMA_HOST}). El modelo {MODEL_NAME} no respondió en {OLLAMA_TIMEOUT} segundos."
         )
     except requests.exceptions.RequestException as e:
         logger.error("No se pudo conectar al servicio local de Ollama: %s", e)
@@ -891,10 +908,11 @@ Redacta de manera formal, precisa y sintética cada sección, concluyendo debida
             detail="No se pudo conectar al servicio local de Ollama. Verifica que el contenedor plurione-ollama esté en ejecución."
         )
 
-    # 7. Persistencia del Contrato Generado en PostgreSQL
+    # 7. Persistencia del Contrato Generado en PostgreSQL (Folio atómico con secuencia)
     nuevo_id = f"cnt-{int(time.time() * 1000)}"
-    conteo_contratos = query_one("SELECT COUNT(*) as c FROM contratos;")["c"] + 1
-    folio = f"NOVA-PSP-2026-{String_folio(conteo_contratos)}"
+    seq_row = query_one("SELECT nextval('contratos_folio_seq') AS seq;")
+    folio_num = seq_row["seq"] if seq_row and seq_row.get("seq") else (query_one("SELECT COUNT(*) as c FROM contratos;")["c"] + 1)
+    folio = f"NOVA-PSP-2026-{String_folio(folio_num)}"
 
     variables_dict = {
         "fecha": v.fecha,
@@ -1155,90 +1173,117 @@ def actualizar_estado_contrato(
 
 
 # ==============================================================================
-# Endpoints de Exportación PDF con WeasyPrint
+# Endpoints de Exportación PDF con WeasyPrint (Seguro contra SSRF / LFI)
 # ==============================================================================
 
-@app.post("/api/v1/contratos/exportar-pdf")
-def exportar_contrato_pdf(
-    payload: SolicitudPDF,
+def safe_url_fetcher(url: str, timeout: int = 5, ssl_context=None):
+    """
+    url_fetcher restringido para WeasyPrint.
+    Bloquea categóricamente peticiones de red externas (http, https) y accesos al
+    sistema de archivos local (file://), mitigando ataques SSRF y LFI.
+    """
+    logger.warning("Intento de SSRF/LFI bloqueado en generación de PDF: %s", url)
+    raise ValueError(f"Acceso a recursos externos y locales bloqueado por seguridad: {url}")
+
+
+def _generar_pdf_seguro(titulo: str, contenido_html: str) -> bytes:
+    """Compila HTML a PDF con WeasyPrint bloqueando resolución de URLs externas y locales."""
+    estilos_impresion = """
+    <style>
+        @page {
+            size: letter;
+            margin: 2.5cm 2cm 2.5cm 2cm;
+            @bottom-right {
+                content: "Página " counter(page) " de " counter(pages);
+                font-size: 9pt;
+                color: #64748b;
+                font-family: Arial, sans-serif;
+            }
+            @bottom-left {
+                content: "NovaLex Tecnología Contractual S.A. de C.V. — Confidencial (Demostración)";
+                font-size: 8pt;
+                color: #94a3b8;
+                font-family: Arial, sans-serif;
+            }
+        }
+        body {
+            font-family: "Georgia", "Times New Roman", serif;
+            font-size: 11pt;
+            line-height: 1.6;
+            color: #0f172a;
+        }
+        h1 {
+            text-align: center;
+            font-size: 15pt;
+            text-transform: uppercase;
+            margin-bottom: 20pt;
+            border-bottom: 2px solid #0f172a;
+            padding-bottom: 6pt;
+        }
+        p {
+            text-align: justify;
+            margin-bottom: 10pt;
+            white-space: pre-wrap;
+        }
+        .firmas-container {
+            page-break-inside: avoid;
+            margin-top: 40pt;
+            display: flex;
+            justify-content: space-between;
+        }
+        .bloque-firma {
+            width: 45%;
+            text-align: center;
+            border-top: 1px solid #000;
+            padding-top: 6pt;
+            font-size: 10pt;
+        }
+    </style>
+    """
+    html_completo = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{html.escape(titulo)}</title>
+    {estilos_impresion}
+</head>
+<body>
+    {contenido_html}
+</body>
+</html>"""
+    return HTML(string=html_completo, url_fetcher=safe_url_fetcher).write_pdf()
+
+
+@app.get("/api/v1/contratos/{contrato_id}/pdf")
+def descargar_pdf_contrato(
+    contrato_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Convierte HTML/CSS a un documento PDF formal con WeasyPrint."""
-    try:
-        estilos_impresion = """
-        <style>
-            @page {
-                size: letter;
-                margin: 2.5cm 2cm 2.5cm 2cm;
-                @bottom-right {
-                    content: "Página " counter(page) " de " counter(pages);
-                    font-size: 9pt;
-                    color: #64748b;
-                    font-family: Arial, sans-serif;
-                }
-                @bottom-left {
-                    content: "NovaLex Tecnología Contractual S.A. de C.V. — Confidencial (Demostración)";
-                    font-size: 8pt;
-                    color: #94a3b8;
-                    font-family: Arial, sans-serif;
-                }
-            }
-            body {
-                font-family: "Georgia", "Times New Roman", serif;
-                font-size: 11pt;
-                line-height: 1.6;
-                color: #0f172a;
-            }
-            h1 {
-                text-align: center;
-                font-size: 15pt;
-                text-transform: uppercase;
-                margin-bottom: 20pt;
-                border-bottom: 2px solid #0f172a;
-                padding-bottom: 6pt;
-            }
-            p {
-                text-align: justify;
-                margin-bottom: 10pt;
-                white-space: pre-wrap;
-            }
-            .firmas-container {
-                page-break-inside: avoid;
-                margin-top: 40pt;
-                display: flex;
-                justify-content: space-between;
-            }
-            .bloque-firma {
-                width: 45%;
-                text-align: center;
-                border-top: 1px solid #000;
-                padding-top: 6pt;
-                font-size: 10pt;
-            }
-        </style>
-        """
-        html_completo = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <title>{payload.titulo}</title>
-            {estilos_impresion}
-        </head>
-        <body>
-            {payload.contenido_html}
-        </body>
-        </html>
-        """
-        pdf_bytes = HTML(string=html_completo).write_pdf()
+    """Genera y descarga directamente el PDF de un contrato guardado en base de datos con saneamiento anti-XSS y anti-SSRF."""
+    contrato = obtener_contrato(contrato_id, current_user=current_user)
+    cliente = obtener_cliente(contrato["clienteId"], current_user=current_user)
 
-        nombre_archivo = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', payload.titulo)
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="{nombre_archivo}.pdf"'
-            }
+    folio_safe = html.escape(str(contrato.get("folio", "")))
+    estado_safe = html.escape(str(contrato.get("estado", "")))
+    razon_social_safe = html.escape(str(cliente.get("razonSocial", "")))
+    rfc_safe = html.escape(str(cliente.get("rfc", "")))
+    texto_generado_safe = html.escape(str(contrato.get("textoGenerado", "")))
+
+    cuerpo_html = f"""
+    <h1>CONTRATO DE PRESTACIÓN DE SERVICIOS PROFESIONALES</h1>
+    <div style="font-size: 10pt; color: #475569; margin-bottom: 20pt; border-bottom: 1px solid #cbd5e1; padding-bottom: 8pt;">
+        <strong>FOLIO:</strong> {folio_safe} &nbsp;|&nbsp;
+        <strong>ESTADO:</strong> {estado_safe} &nbsp;|&nbsp;
+        <strong>CLIENTE:</strong> {razon_social_safe} (RFC: {rfc_safe})
+    </div>
+    <div style="white-space: pre-wrap; font-size: 10.5pt; line-height: 1.55; text-align: justify;">
+{texto_generado_safe}
+    </div>
+    """
+    try:
+        pdf_bytes = _generar_pdf_seguro(
+            titulo=f"{folio_safe}_CONTRATO_NOVALEX",
+            contenido_html=cuerpo_html
         )
     except Exception as e:
         logger.error("Error al generar PDF con WeasyPrint: %s", e, exc_info=True)
@@ -1247,26 +1292,11 @@ def exportar_contrato_pdf(
             detail="Error interno del servidor al compilar el documento PDF."
         )
 
-
-@app.get("/api/v1/contratos/{contrato_id}/pdf")
-def descargar_pdf_contrato(
-    contrato_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """Genera y descarga directamente el PDF de un contrato guardado en base de datos."""
-    contrato = obtener_contrato(contrato_id, current_user=current_user)
-    cliente = obtener_cliente(contrato["clienteId"], current_user=current_user)
-
-    cuerpo_html = f"""
-    <h1>CONTRATO DE PRESTACIÓN DE SERVICIOS PROFESIONALES</h1>
-    <div style="font-size: 10pt; color: #475569; margin-bottom: 20pt; border-bottom: 1px solid #cbd5e1; padding-bottom: 8pt;">
-        <strong>FOLIO:</strong> {contrato['folio']} &nbsp;|&nbsp;
-        <strong>ESTADO:</strong> {contrato['estado']} &nbsp;|&nbsp;
-        <strong>CLIENTE:</strong> {cliente['razonSocial']} (RFC: {cliente['rfc']})
-    </div>
-    <div style="white-space: pre-wrap; font-size: 10.5pt; line-height: 1.55; text-align: justify;">
-{contrato['textoGenerado']}
-    </div>
-    """
-    solicitud = SolicitudPDF(titulo=f"{contrato['folio']}_CONTRATO_NOVALEX", contenido_html=cuerpo_html)
-    return exportar_contrato_pdf(solicitud, current_user=current_user)
+    nombre_archivo = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', f"{folio_safe}_CONTRATO_NOVALEX")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{nombre_archivo}.pdf"'
+        }
+    )

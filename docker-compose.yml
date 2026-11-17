@@ -29,7 +29,7 @@ services:
     restart: unless-stopped
 
   # ----------------------------------------------------------------------------
-  # 2. Backend: API REST FastAPI (Python 3.11) + WeasyPrint + LangChain
+  # 2. Backend: API REST FastAPI (Python 3.11) + WeasyPrint
   # ----------------------------------------------------------------------------
   backend:
     build:
@@ -39,11 +39,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://plurione@postgres:5432/contratos_db
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-plurione}:${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}@postgres:5432/${POSTGRES_DB:-contratos_db}
       - OLLAMA_HOST=http://ollama:11434
       - MODEL_NAME=llama3.1:8b
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-      - JWT_SECRET=${JWT_SECRET:-4f9c8d2e7a1b3c5e8d9a0f2b4c6e8a1d3f5b7c9e0a2d4f6a8b0c2e4d6f8a0b2c}
+      - JWT_SECRET=${JWT_SECRET:?Define JWT_SECRET en .env}
     volumes:
       - ./backend:/app
     depends_on:
@@ -78,16 +78,16 @@ services:
     #           capabilities: [gpu]
 
   # ----------------------------------------------------------------------------
-  # 4. Base de Datos Relacional: PostgreSQL 15
+  # 4. Base de Datos Relacional: PostgreSQL 15 (Protegido en localhost)
   # ----------------------------------------------------------------------------
   postgres:
     image: postgres:15-alpine
     container_name: plurione-postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       - POSTGRES_USER=plurione
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-novalex_secure_pg_2026}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}
       - POSTGRES_DB=contratos_db
       - POSTGRES_HOST_AUTH_METHOD=scram-sha-256
     command: postgres -c hba_file=/etc/postgresql/pg_hba.conf

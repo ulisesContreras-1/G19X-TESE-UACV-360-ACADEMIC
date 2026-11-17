@@ -22,13 +22,30 @@ Verificación exhaustiva de los 16 puntos requeridos:
 import os
 import sys
 import time
+from pathlib import Path
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).resolve().parent / ".env"
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path, override=True)
+    else:
+        load_dotenv(override=True)
+except ImportError:
+    pass
+
 BASE_URL = os.environ.get("TEST_BASE_URL", "http://127.0.0.1:8000")
-# Verificación de conexión sin contraseña
-DB_URL_NO_PASSWORD = os.environ.get("DATABASE_URL", "postgresql://plurione@postgres:5432/contratos_db")
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://plurione:novalex_secure_pg_2026@postgres:5432/contratos_db"
+)
+DB_URL_NO_PASSWORD = os.environ.get(
+    "DB_URL_NO_PASSWORD",
+    "postgresql://plurione@postgres:5432/contratos_db"
+)
 
 def ejecutar_pruebas():
     resultados = []
@@ -165,16 +182,30 @@ def ejecutar_pruebas():
     # Prueba 7: Generador intentando aprobar: HTTP 403
     # --------------------------------------------------------------------------
     print("\n[Prueba 7] Generador intentando aprobar contrato: HTTP 403...")
+    contrato_lifecycle_id = "cnt-test-lifecycle"
     try:
-        # Obtenemos un contrato existente de la base de datos
-        conn = psycopg2.connect("postgresql://plurione@postgres:5432/contratos_db")
+        # Preparamos un contrato dedicado de prueba sin mutar contratos existentes
+        conn = psycopg2.connect(DATABASE_URL)
         with conn.cursor() as cur:
-            cur.execute("SELECT id FROM contratos ORDER BY creado_en DESC LIMIT 1;")
-            contrato_target_id = cur.fetchone()[0]
+            cur.execute("""
+                INSERT INTO contratos (
+                    id, cliente_id, tipo_contrato, estado, variables,
+                    clausulas_seleccionadas, texto_generado, creado_por,
+                    creado_en, actualizado_en
+                ) VALUES (
+                    %s, 'cli-001', 'PRESTACION_SERVICIOS', 'BORRADOR',
+                    '{"folio": "NOVA-TEST-001", "historial": []}',
+                    ARRAY['clausula-std-1'],
+                    'Texto borrador de prueba para verificación de ciclo de vida RBAC.',
+                    'usr-gen-01', NOW(), NOW()
+                )
+                ON CONFLICT (id) DO UPDATE SET estado = 'BORRADOR', actualizado_en = NOW();
+            """, (contrato_lifecycle_id,))
+            conn.commit()
         conn.close()
 
         res_gen_aprueba = requests.put(
-            f"{BASE_URL}/api/v1/contratos/{contrato_target_id}/estado",
+            f"{BASE_URL}/api/v1/contratos/{contrato_lifecycle_id}/estado",
             headers={"Authorization": f"Bearer {token_gen}"},
             json={
                 "nuevoEstado": "APROBADO",
@@ -199,7 +230,7 @@ def ejecutar_pruebas():
     print("\n[Prueba 8] Editor intentando aprobar contrato: HTTP 403...")
     try:
         res_edit_aprueba = requests.put(
-            f"{BASE_URL}/api/v1/contratos/{contrato_target_id}/estado",
+            f"{BASE_URL}/api/v1/contratos/{contrato_lifecycle_id}/estado",
             headers={"Authorization": f"Bearer {token_edit}"},
             json={
                 "nuevoEstado": "APROBADO",
@@ -223,21 +254,9 @@ def ejecutar_pruebas():
     # --------------------------------------------------------------------------
     print("\n[Prueba 9] Aprobador aprobando o rechazando conforme a las reglas de negocio...")
     try:
-        # Asegurar contrato en BORRADOR para iniciar la secuencia completa
-        conn = psycopg2.connect("postgresql://plurione@postgres:5432/contratos_db")
-        with conn.cursor() as cur:
-            cur.execute("SELECT id FROM contratos WHERE estado = 'BORRADOR' LIMIT 1;")
-            row_draft = cur.fetchone()
-            if row_draft:
-                contrato_target_id = row_draft[0]
-            else:
-                cur.execute("UPDATE contratos SET estado = 'BORRADOR' WHERE id = %s;", (contrato_target_id,))
-                conn.commit()
-        conn.close()
-
-        # Generador envía a EN_REVISION
+        # Generador envía a EN_REVISION el contrato de prueba dedicado
         res_envio = requests.put(
-            f"{BASE_URL}/api/v1/contratos/{contrato_target_id}/estado",
+            f"{BASE_URL}/api/v1/contratos/{contrato_lifecycle_id}/estado",
             headers={"Authorization": f"Bearer {token_gen}"},
             json={
                 "nuevoEstado": "EN_REVISION",
@@ -252,7 +271,7 @@ def ejecutar_pruebas():
 
         # 9a. Aprobador rechaza a BORRADOR con motivo
         res_rechazo = requests.put(
-            f"{BASE_URL}/api/v1/contratos/{contrato_target_id}/estado",
+            f"{BASE_URL}/api/v1/contratos/{contrato_lifecycle_id}/estado",
             headers={"Authorization": f"Bearer {token_aprob}"},
             json={
                 "nuevoEstado": "BORRADOR",
@@ -268,7 +287,7 @@ def ejecutar_pruebas():
 
         # 9b. Generador reenvía a EN_REVISION
         res_reenvio = requests.put(
-            f"{BASE_URL}/api/v1/contratos/{contrato_target_id}/estado",
+            f"{BASE_URL}/api/v1/contratos/{contrato_lifecycle_id}/estado",
             headers={"Authorization": f"Bearer {token_gen}"},
             json={
                 "nuevoEstado": "EN_REVISION",
@@ -282,7 +301,7 @@ def ejecutar_pruebas():
 
         # 9c. Aprobador aprueba formalmente
         res_aprob = requests.put(
-            f"{BASE_URL}/api/v1/contratos/{contrato_target_id}/estado",
+            f"{BASE_URL}/api/v1/contratos/{contrato_lifecycle_id}/estado",
             headers={"Authorization": f"Bearer {token_aprob}"},
             json={
                 "nuevoEstado": "APROBADO",
@@ -297,8 +316,18 @@ def ejecutar_pruebas():
         assert res_aprob.json()["estado"] == "APROBADO"
         assert res_aprob.json()["aprobadoPor"] == "Javier Morales Hinojosa"
 
+        # Limpieza de contrato de prueba dedicado (preservando datos históricos intactos)
+        conn = psycopg2.connect(DATABASE_URL)
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM contratos WHERE id = %s;", (contrato_lifecycle_id,))
+            conn.commit()
+        conn.close()
+
         print(f" -> ÉXITO: Flujo de aprobación y rechazo completado correctamente por el Aprobador.")
-        resultados.append(("9. Aprobador aprobando o rechazando según reglas", True, "Flujo BORRADOR -> EN_REVISION -> BORRADOR (con motivo) -> EN_REVISION -> APROBADO validado"))
+        resultados.append(("9. Aprobador aprobando o rechazando según reglas", True, "Flujo BORRADOR -> EN_REVISION -> BORRADOR (con motivo) -> EN_REVISION -> APROBADO validado sin mutar datos históricos"))
+    except Exception as e:
+        print(f" -> FALLÓ: {e}")
+        resultados.append(("9. Aprobador aprobando o rechazando según reglas", False, str(e)))
     except Exception as e:
         print(f" -> FALLÓ: {e}")
         resultados.append(("9. Aprobador aprobando o rechazando según reglas", False, str(e)))
@@ -322,29 +351,41 @@ def ejecutar_pruebas():
         resultados.append(("10. Cierre de sesión y protección de rutas", False, str(e)))
 
     # --------------------------------------------------------------------------
-    # Prueba 11: Conexión FastAPI-PostgreSQL sin contraseña
+    # Prueba 11: Seguridad en PostgreSQL y Autenticación SCRAM-SHA-256
     # --------------------------------------------------------------------------
-    print("\n[Prueba 11] Conexión FastAPI-PostgreSQL sin contraseña en DATABASE_URL...")
+    print("\n[Prueba 11] Seguridad en PostgreSQL y Autenticación SCRAM-SHA-256...")
     try:
-        conn = psycopg2.connect("postgresql://plurione@postgres:5432/contratos_db")
+        # 11a. Verificación de conexión autorizada con credenciales completas
+        conn = psycopg2.connect(DATABASE_URL)
         with conn.cursor() as cur:
             cur.execute("SELECT current_user, current_database(), pg_backend_pid();")
             row = cur.fetchone()
             assert row[0] == "plurione", f"Usuario DB inesperado: {row[0]}"
             assert row[1] == "contratos_db", f"Database inesperada: {row[1]}"
         conn.close()
-        print(f" -> ÉXITO: Conexión directa a PostgreSQL lograda SIN suministrar contraseña (trust auth en Docker).")
-        resultados.append(("11. Conexión FastAPI-PostgreSQL sin contraseña", True, f"psycopg2 conectado exitosamente como usuario '{row[0]}' en base '{row[1]}' sin contraseña"))
+        print(f" -> ÉXITO 11a: Conexión autorizada con usuario '{row[0]}' y SCRAM en base '{row[1]}'.")
+
+        # 11b. Verificación de rechazo ante intento de conexión TCP sin contraseña
+        rechazo_sin_pass = False
+        try:
+            conn_insegura = psycopg2.connect(DB_URL_NO_PASSWORD, connect_timeout=3)
+            conn_insegura.close()
+        except psycopg2.OperationalError as op_err:
+            rechazo_sin_pass = True
+            print(f" -> ÉXITO 11b: Conexión TCP sin contraseña fue rechazada correctamente por PostgreSQL: {op_err}")
+
+        assert rechazo_sin_pass, "FALLO DE SEGURIDAD: PostgreSQL permitió conexión TCP sin contraseña (la regla trust sigue activa en red)."
+        resultados.append(("11. Seguridad PostgreSQL (SCRAM obligatorio)", True, "Conexión autorizada con SCRAM OK | Conexión sin contraseña rechazada por SCRAM en red TCP"))
     except Exception as e:
         print(f" -> FALLÓ: {e}")
-        resultados.append(("11. Conexión FastAPI-PostgreSQL sin contraseña", False, str(e)))
+        resultados.append(("11. Seguridad PostgreSQL (SCRAM obligatorio)", False, str(e)))
 
     # --------------------------------------------------------------------------
     # Prueba 12: Conservación de datos tras reinicio de servicios
     # --------------------------------------------------------------------------
     print("\n[Prueba 12] Conservación de los datos en PostgreSQL...")
     try:
-        conn = psycopg2.connect("postgresql://plurione@postgres:5432/contratos_db")
+        conn = psycopg2.connect(DATABASE_URL)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT COUNT(*) AS total FROM clientes;")
             cnt_cli = cur.fetchone()["total"]
@@ -364,6 +405,9 @@ def ejecutar_pruebas():
         conn.close()
         print(f" -> ÉXITO: Datos conservados: {cnt_cli} clientes, {cnt_cls} cláusulas, {cnt_cnt} contratos, {cnt_usr} usuarios con Bcrypt.")
         resultados.append(("12. Conservación de datos tras reinicio", True, f"{cnt_cli} clientes, {cnt_cls} cláusulas, {cnt_cnt} contratos, {cnt_usr} cuentas con bcrypt"))
+    except Exception as e:
+        print(f" -> FALLÓ: {e}")
+        resultados.append(("12. Conservación de datos tras reinicio", False, str(e)))
     except Exception as e:
         print(f" -> FALLÓ: {e}")
         resultados.append(("12. Conservación de datos tras reinicio", False, str(e)))
@@ -414,11 +458,12 @@ def ejecutar_pruebas():
         print(" -> ÉXITO: Validación de cláusulas inexistentes rechazada con HTTP 400.")
 
         # 13b. Generación autorizada del contrato completo con Llama 3.1 8B
+        timeout_gen = int(os.environ.get("OLLAMA_TIMEOUT", "480")) + 30
         res_gen = requests.post(
             f"{BASE_URL}/api/v1/contratos/generar",
             headers={"Authorization": f"Bearer {token_gen}"},
             json=payload_generacion,
-            timeout=380
+            timeout=timeout_gen
         )
         t_gen = time.time() - t0
         assert res_gen.status_code == 201, f"Status code no es 201: {res_gen.status_code} - {res_gen.text}"
@@ -475,8 +520,25 @@ def ejecutar_pruebas():
         assert pdf_bytes.startswith(b"%PDF-"), "Encabezado no corresponde a archivo PDF legítimo"
         assert len(pdf_bytes) > 5000, f"PDF demasiado pequeño: {len(pdf_bytes)} bytes"
 
-        print(f" -> ÉXITO: PDF formal renderizado con WeasyPrint ({len(pdf_bytes):,} bytes).")
-        resultados.append(("15. Exportación de PDF", True, f"HTTP 200 | {len(pdf_bytes):,} bytes con firma binaria %PDF-"))
+        # 15b. Verificación de Seguridad: Mitigación de SSRF y LFI en WeasyPrint
+        from main import safe_url_fetcher
+        ssrf_bloqueado = False
+        try:
+            safe_url_fetcher("http://169.254.169.254/latest/meta-data/")
+        except ValueError as v_err:
+            if "bloqueado por seguridad" in str(v_err):
+                ssrf_bloqueado = True
+
+        lfi_bloqueado = False
+        try:
+            safe_url_fetcher("file:///etc/passwd")
+        except ValueError as v_err:
+            if "bloqueado por seguridad" in str(v_err):
+                lfi_bloqueado = True
+
+        assert ssrf_bloqueado and lfi_bloqueado, "safe_url_fetcher no bloqueó intentos de SSRF/LFI"
+        print(f" -> ÉXITO: PDF formal renderizado con WeasyPrint ({len(pdf_bytes):,} bytes). url_fetcher bloquea SSRF (http://) y LFI (file://).")
+        resultados.append(("15. Exportación de PDF (Seguro anti-SSRF/LFI)", True, f"HTTP 200 | {len(pdf_bytes):,} bytes | SSRF y LFI bloqueados por url_fetcher"))
     except Exception as e:
         print(f" -> FALLÓ: {e}")
         resultados.append(("15. Exportación de PDF", False, str(e)))
